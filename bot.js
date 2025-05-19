@@ -43,13 +43,15 @@ async function fullRestart() {
 
   console.warn('Full restart: cleaning up streams and restarting ffmpeg & voice connection');
 
-  // Destroy all mixer inputs
+  // Destroy and remove all mixer inputs individually
   mixer.inputs.forEach(input => {
     try {
       input.destroy();
-    } catch { }
+      mixer.removeInput(input);
+    } catch (e) {
+      console.error('Error removing mixer input:', e);
+    }
   });
-  mixer.removeAllInputs();
 
   // Destroy all speakingStreams
   speakingStreams.forEach(({ opusStream, pcmStream, mixerInput }) => {
@@ -243,6 +245,7 @@ function setupReceiver(receiver) {
     }
   });
 }
+
 function broadcastUserCount() {
   const count = wsClients.size;
   const msg = JSON.stringify({ type: 'user_count', count });
@@ -250,6 +253,7 @@ function broadcastUserCount() {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
 }
+
 async function reconnectVoice() {
   try {
     if (connection) {
@@ -288,25 +292,24 @@ app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 
 const wss = new WebSocket.Server({ server });
-wss.on('connection', (ws) => {
-  ws.on('message', (msg) => {
-    try {
-      const data = JSON.parse(msg);
-      if (data.type === 'speaker') {
-        broadcastMetadata({ type: 'speaker', speaker: currentSpeaker });
-      }
 
-    } catch { }
-  });
-  broadcastUserCount();
+
+
+wss.on('connection', (ws) => {
   wsClients.add(ws);
+  console.log(`🌐 WS client connected. Total: ${wsClients.size}`);
+  ws.send(JSON.stringify({ type: 'status', speaker: currentSpeaker }));
+  broadcastUserCount();
 
   ws.on('close', () => {
     wsClients.delete(ws);
+    console.log(`🔌 WS client disconnected. Total: ${wsClients.size}`);
     broadcastUserCount();
-
   });
+
+  ws.on('error', (err) => console.error('WebSocket error:', err));
 });
+
 
 server.listen(3000, () => console.log('🌐 Server running on port 3000'));
 
