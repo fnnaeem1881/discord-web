@@ -47,15 +47,15 @@ async function fullRestart() {
   mixer.inputs.forEach(input => {
     try {
       input.destroy();
-    } catch {}
+    } catch { }
   });
   mixer.removeAllInputs();
 
   // Destroy all speakingStreams
   speakingStreams.forEach(({ opusStream, pcmStream, mixerInput }) => {
-    try { opusStream.destroy(); } catch {}
-    try { pcmStream.destroy(); } catch {}
-    try { mixerInput.destroy(); } catch {}
+    try { opusStream.destroy(); } catch { }
+    try { pcmStream.destroy(); } catch { }
+    try { mixerInput.destroy(); } catch { }
   });
   speakingStreams.clear();
 
@@ -63,7 +63,7 @@ async function fullRestart() {
   if (ffmpegProcess) {
     try {
       ffmpegProcess.kill('SIGKILL');
-    } catch {}
+    } catch { }
     ffmpegProcess = null;
   }
 
@@ -71,7 +71,7 @@ async function fullRestart() {
   if (connection) {
     try {
       connection.destroy();
-    } catch {}
+    } catch { }
     connection = null;
   }
 
@@ -243,11 +243,17 @@ function setupReceiver(receiver) {
     }
   });
 }
-
+function broadcastUserCount() {
+  const count = wsClients.size;
+  const msg = JSON.stringify({ type: 'user_count', count });
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
 async function reconnectVoice() {
   try {
     if (connection) {
-      try { connection.destroy(); } catch {}
+      try { connection.destroy(); } catch { }
       connection = null;
     }
     const guild = client.guilds.cache.get(GUILD_ID);
@@ -289,12 +295,16 @@ wss.on('connection', (ws) => {
       if (data.type === 'speaker') {
         broadcastMetadata({ type: 'speaker', speaker: currentSpeaker });
       }
-    } catch {}
+
+    } catch { }
   });
+  broadcastUserCount();
   wsClients.add(ws);
 
   ws.on('close', () => {
     wsClients.delete(ws);
+    broadcastUserCount();
+
   });
 });
 
