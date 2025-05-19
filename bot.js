@@ -298,6 +298,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(4000, () => console.log('🌐 Server running on port 4000'));
+server.listen(3000, () => console.log('🌐 Server running on port 4000'));
 
 client.login(process.env.DISCORD_BOT_TOKEN);
