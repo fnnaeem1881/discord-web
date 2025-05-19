@@ -55,8 +55,8 @@ function startFfmpeg() {
 
   mixer.pipe(ffmpegProcess.stdin);
 
+  // IMPORTANT: Do NOT update lastAudioReceived here, because this data comes even if no voice audio
   ffmpegProcess.stdout.on('data', (chunk) => {
-    lastAudioReceived = Date.now();
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(chunk);
@@ -84,6 +84,9 @@ function checkSilenceAndReconnect() {
 }
 
 setInterval(checkSilenceAndReconnect, 5000);
+
+
+console.log('Starting Discord bot...');
 
 // Broadcast metadata to WebSocket clients
 function broadcastMetadata(obj) {
@@ -139,6 +142,7 @@ function setupReceiver(receiver) {
     pcmStream.pipe(mixerInput);
     mixer.addInput(mixerInput);
 
+    // ONLY update lastAudioReceived here on actual PCM audio data
     pcmStream.on('data', () => {
       lastAudioReceived = Date.now();
     });
