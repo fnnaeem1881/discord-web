@@ -30,6 +30,7 @@
       padding: 2rem 2.5rem;
       text-align: center;
       backdrop-filter: blur(10px);
+      margin: auto;
     }
 
     h1 {
@@ -108,21 +109,28 @@
 </head>
 
 <body>
-  <div class="radio-card shadow-lg">
-    <h1>Garibook Radio</h1>
-    <div style="display: none;">
-      <strong>Current Speaker:</strong>
-      <div id="speaker" aria-live="polite" aria-atomic="true">None</div>
+  <div class="container">
+    <div class="radio-card shadow-lg">
+      <h1>Garibook Radio</h1>
+      <div style="display: none;">
+        <strong>Current Speaker:</strong>
+        <div id="speaker" aria-live="polite" aria-atomic="true">None</div>
+      </div>
+      <div id="userCount" style="margin-bottom: 1rem; font-weight: 600; color: #0e52ff;">Listeners: 0</div>
+      <div class="d-flex justify-content-center flex-wrap">
+        <button id="startButton" class="btn-custom" type="button">Click to Start Audio</button>
+        <button id="muteButton" class="btn-custom" type="button" disabled>Mute</button>
+      </div>
     </div>
-    <div id="userCount" style="margin-bottom: 1rem; font-weight: 600; color: #0e52ff;">Listeners: 0</div>
-    <div class="d-flex justify-content-center flex-wrap">
-      <button id="startButton" class="btn-custom" type="button">Click to Start Audio</button>
-      <button id="muteButton" class="btn-custom" type="button" disabled>Mute</button>
+    <div class="row">
+      <div class="col-md-12">
+          <audio></audio>
+      </div>
+      <div class="col-md-12">
+           <canvas id="waveform"></canvas>
+
     </div>
   </div>
-
-  <audio></audio>
-  <canvas id="waveform"></canvas>
 
   <script>
     const speakerEl = document.getElementById('speaker');
