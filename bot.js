@@ -57,6 +57,7 @@ function startFfmpeg() {
     noDataTimeout = setTimeout(() => {
       console.warn('⚠️ No ffmpeg stdout data for 5 seconds. Reconnecting voice...');
       reconnectVoice();
+      startFfmpeg();
     }, 5000); // 5 seconds timeout
   }
 
