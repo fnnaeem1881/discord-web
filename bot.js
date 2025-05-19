@@ -51,6 +51,8 @@ function startFfmpeg() {
   ffmpegProcess.stdout.on('data', (chunk) => {
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
+        console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
+        
         ws.send(chunk);
       }
     }
