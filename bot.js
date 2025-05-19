@@ -32,6 +32,8 @@ const mixer = new AudioMixer.Mixer({
 });
 
 let ffmpegProcess;
+let noDataTimeout;
+
 function startFfmpeg() {
   console.log('Starting ffmpeg process...');
   ffmpegProcess = spawn(ffmpegStatic, [
@@ -49,11 +51,22 @@ function startFfmpeg() {
   mixer.pipe(ffmpegProcess.stdin);
   console.log('ffmpeg process started');
 
+  // Clear and reset noDataTimeout on data event
+  function resetNoDataTimeout() {
+    if (noDataTimeout) clearTimeout(noDataTimeout);
+    noDataTimeout = setTimeout(() => {
+      console.warn('⚠️ No ffmpeg stdout data for 5 seconds. Reconnecting voice...');
+      reconnectVoice();
+    }, 5000); // 5 seconds timeout
+  }
+
   ffmpegProcess.stdout.on('data', (chunk) => {
     console.log(`Opus stream data from  ${chunk.length} bytes`);
+    console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
 
+    resetNoDataTimeout();
 
-    if (chunk.length < 0) {
+    if (chunk.length <= 0) {
       console.error('Received empty audio chunk');
       reconnectVoice();
       console.warn('Reconnecting voice...');
@@ -62,12 +75,13 @@ function startFfmpeg() {
 
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
-        console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
-
         ws.send(chunk);
       }
     }
   });
+
+  // Set initial timeout as soon as ffmpeg starts
+  resetNoDataTimeout();
 
   ffmpegProcess.stdin.on('error', (err) => console.error('ffmpeg stdin error:', err));
   ffmpegProcess.stdout.on('error', (err) => console.error('ffmpeg stdout error:', err));
@@ -76,6 +90,7 @@ function startFfmpeg() {
   ffmpegProcess.on('close', (code, signal) => {
     console.warn(`ffmpeg process closed (code: ${code}, signal: ${signal}). Restarting...`);
     mixer.unpipe(ffmpegProcess.stdin);
+    if (noDataTimeout) clearTimeout(noDataTimeout);
     reconnectVoice();
   });
 }
