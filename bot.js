@@ -54,6 +54,7 @@ function startFfmpeg() {
   ]);
 
   mixer.pipe(ffmpegProcess.stdin);
+console.log('Starting Discord bot...');
 
   // IMPORTANT: Do NOT update lastAudioReceived here, because this data comes even if no voice audio
   ffmpegProcess.stdout.on('data', (chunk) => {
@@ -86,7 +87,6 @@ function checkSilenceAndReconnect() {
 setInterval(checkSilenceAndReconnect, 5000);
 
 
-console.log('Starting Discord bot...');
 
 // Broadcast metadata to WebSocket clients
 function broadcastMetadata(obj) {
