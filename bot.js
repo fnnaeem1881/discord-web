@@ -2,7 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinVoiceChannel, EndBehaviorType } = require('@discordjs/voice');
 const prism = require('prism-media');
-const ffmpeg = require('ffmpeg-static');
+const ffmpegStatic = require('ffmpeg-static');
 const { spawn } = require('child_process');
 const express = require('express');
 const path = require('path');
@@ -30,31 +30,54 @@ const mixer = new AudioMixer.Mixer({
   maxStreams: 20,
 });
 
-// FFmpeg encoding
-const ffmpegProcess = spawn(ffmpeg, [
-  '-f', 's16le',
-  '-ar', '48000',
-  '-ac', '1',
-  '-i', 'pipe:0',
-  '-af', 'afftdn',
-  '-f', 'mp3',
-  '-b:a', '128k',
-  '-ac', '2',
-  'pipe:1',
-]);
+let ffmpegProcess;
+function startFfmpeg() {
+  console.log('Starting ffmpeg process...');
+  ffmpegProcess = spawn(ffmpegStatic, [
+    '-f', 's16le',
+    '-ar', '48000',
+    '-ac', '1',
+    '-i', 'pipe:0',
+    '-af', 'afftdn',
+    '-f', 'mp3',
+    '-b:a', '128k',
+    '-ac', '2',
+    'pipe:1',
+  ]);
 
-mixer.pipe(ffmpegProcess.stdin);
+  // Pipe mixer output to ffmpeg stdin
+  mixer.pipe(ffmpegProcess.stdin);
 
-// Send MP3 audio over WebSocket in binary
-ffmpegProcess.stdout.on('data', (chunk) => {
-  for (const ws of wsClients) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(chunk);
+  ffmpegProcess.stdout.on('data', (chunk) => {
+    for (const ws of wsClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(chunk);
+      }
     }
-  }
-});
+  });
 
-// Get speaker's username
+  ffmpegProcess.stdin.on('error', (err) => {
+    console.error('ffmpeg stdin error:', err);
+  });
+  ffmpegProcess.stdout.on('error', (err) => {
+    console.error('ffmpeg stdout error:', err);
+  });
+  ffmpegProcess.on('error', (err) => {
+    console.error('ffmpeg process error:', err);
+  });
+
+  ffmpegProcess.on('close', (code, signal) => {
+    console.warn(`ffmpeg process closed with code ${code} and signal ${signal}. Restarting...`);
+    // Unpipe old ffmpeg stdin safely
+    mixer.unpipe(ffmpegProcess.stdin);
+    setTimeout(startFfmpeg, 1000);
+  });
+}
+
+// Start ffmpeg process initially
+startFfmpeg();
+
+// Helper: get Discord username from userId
 async function getUsername(userId) {
   try {
     const user = await client.users.fetch(userId);
@@ -64,7 +87,7 @@ async function getUsername(userId) {
   }
 }
 
-// Send metadata
+// Broadcast metadata to all WebSocket clients
 function broadcastMetadata(obj) {
   const json = JSON.stringify(obj);
   for (const ws of wsClients) {
@@ -74,7 +97,6 @@ function broadcastMetadata(obj) {
   }
 }
 
-// Connect to Discord
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -92,7 +114,10 @@ client.once('ready', async () => {
   const speakingStreams = new Map();
 
   receiver.speaking.on('start', async (userId) => {
-    if (speakingStreams.has(userId)) return;
+    if (speakingStreams.has(userId)) {
+      // Already tracking this user
+      return;
+    }
 
     const username = await getUsername(userId);
     currentSpeaker = username;
@@ -121,28 +146,30 @@ client.once('ready', async () => {
     pcmStream.pipe(mixerInput);
     mixer.addInput(mixerInput);
 
-    // Audio inactivity timeout logic
+    // Audio inactivity timeout logic (restart on 3 seconds silence)
     let audioTimeout;
 
     function resetAudioTimeout() {
       if (audioTimeout) clearTimeout(audioTimeout);
       audioTimeout = setTimeout(() => {
-        console.log(`⚠️ No audio data from ${username} for 3 seconds, restarting audio stream...`);
+        console.log(`⚠️ No audio data from ${username} for 3 seconds, cleaning up...`);
 
         cleanup();
 
-        // Destroy and remove any existing streams
+        // Destroy and remove any existing streams safely
         if (speakingStreams.has(userId)) {
           const streams = speakingStreams.get(userId);
           try {
             streams.opusStream.destroy();
-          } catch (e) {}
+          } catch (e) {
+            console.warn('Error destroying opusStream:', e);
+          }
           speakingStreams.delete(userId);
         }
 
-        // Note: Discord will re-emit 'start' if user is still speaking,
-        // so no need to manually resubscribe here.
-      }, 3000); // 3 seconds no data triggers restart
+        // Discord may re-emit 'start' event if user still speaking,
+        // so no manual resubscribe needed here.
+      }, 3000);
     }
 
     pcmStream.on('data', () => {
@@ -156,33 +183,48 @@ client.once('ready', async () => {
       currentSpeaker = null;
       broadcastMetadata({ type: 'speaker', speaker: null });
 
-      if (audioTimeout) clearTimeout(audioTimeout);
-      audioTimeout = null;
+      if (audioTimeout) {
+        clearTimeout(audioTimeout);
+        audioTimeout = null;
+      }
 
       try {
         mixer.removeInput(mixerInput);
-      } catch (e) {}
+      } catch (e) {
+        console.warn('Error removing mixer input:', e);
+      }
 
       pcmStream.unpipe(mixerInput);
       pcmStream.destroy();
       if (typeof mixerInput.destroy === 'function') mixerInput.destroy();
       if (typeof mixerInput.stop === 'function') mixerInput.stop();
-      opusStream.destroy();
+      try {
+        opusStream.destroy();
+      } catch (e) {
+        console.warn('Error destroying opusStream:', e);
+      }
 
       speakingStreams.delete(userId);
     };
 
     opusStream.on('end', cleanup);
-    opusStream.on('error', console.error);
-    pcmStream.on('error', console.error);
+    opusStream.on('error', (e) => {
+      console.error(`OpusStream error for ${username}:`, e);
+      cleanup();
+    });
+    pcmStream.on('error', (e) => {
+      console.error(`PCMStream error for ${username}:`, e);
+      cleanup();
+    });
 
     speakingStreams.set(userId, { opusStream, pcmStream, mixerInput });
   });
 
   receiver.speaking.on('end', (userId) => {
-    const stream = speakingStreams.get(userId);
-    if (stream) {
-      stream.opusStream.emit('end');
+    const streams = speakingStreams.get(userId);
+    if (streams) {
+      // Trigger cleanup by ending opus stream
+      streams.opusStream.emit('end');
     }
   });
 });
@@ -197,6 +239,7 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
 const wss = new WebSocket.Server({ server, path: '/ws' });
+
 function broadcastUserCount() {
   const count = wsClients.size;
   const msg = JSON.stringify({ type: 'user_count', count });
@@ -206,21 +249,38 @@ function broadcastUserCount() {
     }
   }
 }
+
 wss.on('connection', (ws) => {
   wsClients.add(ws);
   console.log(`🌐 WS client connected. Total WS: ${wsClients.size}`);
 
+  // Send current speaker info on new connection
   ws.send(JSON.stringify({
     type: 'status',
     speaker: currentSpeaker,
   }));
+
   broadcastUserCount();
+
   ws.on('close', () => {
     wsClients.delete(ws);
     console.log(`🔌 WS client disconnected. Total WS: ${wsClients.size}`);
     broadcastUserCount();
   });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+  });
 });
+
+// Ping clients periodically to keep WebSocket alive
+setInterval(() => {
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  }
+}, 30000);
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running: http://localhost:${PORT}`);
