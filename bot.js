@@ -51,6 +51,14 @@ function startFfmpeg() {
   ffmpegProcess.stdout.on('data', (chunk) => {
       console.log(`Opus stream data from  ${chunk.length} bytes`);
     
+    
+    if (chunk.length < 0) {
+      console.error('Received empty audio chunk');
+      reconnectVoice();
+      console.warn('Reconnecting voice...');
+      return;
+    }
+
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
         console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
@@ -67,7 +75,7 @@ function startFfmpeg() {
   ffmpegProcess.on('close', (code, signal) => {
     console.warn(`ffmpeg process closed (code: ${code}, signal: ${signal}). Restarting...`);
     mixer.unpipe(ffmpegProcess.stdin);
-    setTimeout(startFfmpeg, 1000);
+    reconnectVoice();
   });
 }
 
