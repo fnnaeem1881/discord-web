@@ -121,12 +121,43 @@ client.once('ready', async () => {
     pcmStream.pipe(mixerInput);
     mixer.addInput(mixerInput);
 
-    speakingStreams.set(userId, { opusStream, pcmStream, mixerInput });
+    // Audio inactivity timeout logic
+    let audioTimeout;
+
+    function resetAudioTimeout() {
+      if (audioTimeout) clearTimeout(audioTimeout);
+      audioTimeout = setTimeout(() => {
+        console.log(`⚠️ No audio data from ${username} for 3 seconds, restarting audio stream...`);
+
+        cleanup();
+
+        // Destroy and remove any existing streams
+        if (speakingStreams.has(userId)) {
+          const streams = speakingStreams.get(userId);
+          try {
+            streams.opusStream.destroy();
+          } catch (e) {}
+          speakingStreams.delete(userId);
+        }
+
+        // Note: Discord will re-emit 'start' if user is still speaking,
+        // so no need to manually resubscribe here.
+      }, 3000); // 3 seconds no data triggers restart
+    }
+
+    pcmStream.on('data', () => {
+      resetAudioTimeout();
+    });
+
+    resetAudioTimeout();
 
     const cleanup = () => {
       console.log(`🛑 ${username} stopped speaking`);
       currentSpeaker = null;
       broadcastMetadata({ type: 'speaker', speaker: null });
+
+      if (audioTimeout) clearTimeout(audioTimeout);
+      audioTimeout = null;
 
       try {
         mixer.removeInput(mixerInput);
@@ -144,6 +175,8 @@ client.once('ready', async () => {
     opusStream.on('end', cleanup);
     opusStream.on('error', console.error);
     pcmStream.on('error', console.error);
+
+    speakingStreams.set(userId, { opusStream, pcmStream, mixerInput });
   });
 
   receiver.speaking.on('end', (userId) => {
@@ -184,9 +217,8 @@ wss.on('connection', (ws) => {
   broadcastUserCount();
   ws.on('close', () => {
     wsClients.delete(ws);
-    
     console.log(`🔌 WS client disconnected. Total WS: ${wsClients.size}`);
-      broadcastUserCount();
+    broadcastUserCount();
   });
 });
 
