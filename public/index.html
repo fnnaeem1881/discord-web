@@ -1,107 +1,227 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Discord Channel Chat</title>
+  <title>Garibook Radio — Smooth Voice Playback</title>
+  <!-- Bootstrap CSS CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500&family=Roboto:wght@400;700&display=swap"
+    rel="stylesheet" />
   <style>
     body {
-      font-family: Arial, sans-serif;
-      padding: 20px;
-      background: #282c34;
-      color: #ddd;
+      background: linear-gradient(135deg, #0a1b4d, #12285a, #1b3674);
+      color: #e0e0e0;
+      font-family: 'Roboto', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      user-select: none;
     }
-    #chatBox {
-      width: 400px;
-      height: 400px;
-      border: 1px solid #555;
-      background: #1e2228;
-      padding: 10px;
-      overflow-y: scroll;
-      margin-bottom: 10px;
-      border-radius: 5px;
+
+    .radio-card {
+      background: rgba(0, 0, 0, 0.75);
+      border-radius: 1rem;
+      box-shadow: 0 0 40px #0e52ffcc;
+      max-width: 400px;
+      width: 100%;
+      padding: 2rem 2.5rem;
+      text-align: center;
+      backdrop-filter: blur(10px);
     }
-    #chatBox div {
-      margin-bottom: 8px;
+
+    h1 {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 500;
+      font-size: 2.5rem;
+      letter-spacing: 4px;
+      margin-bottom: 1rem;
+      color: #0e52ff;
+      text-shadow:
+        0 0 8px #0e52ff,
+        0 0 15px #0e52ff;
     }
-    #chatBox strong {
-      color: #61dafb;
+
+    #speaker {
+      font-family: 'Orbitron', monospace;
+      font-size: 1.8rem;
+      background: #0c1a6f;
+      padding: 0.7rem 1.5rem;
+      border-radius: 12px;
+      margin: 1.5rem 0 2.5rem;
+      color: #0e52ff;
+      box-shadow:
+        inset 0 0 12px #0e52ffaa,
+        0 0 25px #0e52ffcc;
+      letter-spacing: 2px;
+      user-select: text;
+      min-height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    input[type="text"] {
-      width: 150px;
-      padding: 8px;
-      border-radius: 3px;
+
+    .btn-custom {
+      font-size: 1.3rem;
+      padding: 0.75rem 2rem;
+      border-radius: 50px;
+      background: #0e52ff;
       border: none;
-      margin-right: 5px;
+      color: #e0e0e0;
+      font-weight: 700;
+      box-shadow: 0 0 15px #0e52ffcc;
+      transition: background-color 0.3s ease, color 0.3s ease;
+      user-select: none;
+      margin: 0.25rem;
+      min-width: 140px;
     }
-    #msgInput {
-      width: 230px;
+
+    .btn-custom:hover:not(:disabled) {
+      background-color: #083ab8;
+      color: #c5d1ff;
+      box-shadow: 0 0 25px #083ab8dd;
     }
-    button {
-      padding: 8px 12px;
-      border: none;
-      border-radius: 3px;
-      background: #61dafb;
-      color: #000;
-      font-weight: bold;
-      cursor: pointer;
+
+    .btn-custom:disabled {
+      background-color: #05236f;
+      color: #7590e6;
+      box-shadow: none;
+      cursor: not-allowed;
     }
-    button:hover {
-      background: #21a1f1;
+
+    audio {
+      margin-top: 1.5rem;
+      width: 100%;
+      border-radius: 12px;
+      outline: none;
+      box-shadow: 0 0 15px #0e52ff66;
+      display: none;
     }
   </style>
 </head>
+
 <body>
-  <h2>Discord Channel Chat</h2>
+  <div class="radio-card shadow-lg">
+    <h1>Garibook Radio</h1>
 
-  <input type="text" id="userInput" placeholder="Enter your name" />
-  <input type="text" id="msgInput" placeholder="Enter message" />
-  <button onclick="sendMessage()">Send</button>
+   <div style="display: none;">
+     <strong>Current Speaker:</strong>
+    <div id="speaker" aria-live="polite" aria-atomic="true">None</div>
 
-  <div id="chatBox"></div>
+   </div>
+    <div id="userCount" style="margin-bottom: 1rem; font-weight: 600; color: #0e52ff;">
+      Listeners: 0
+    </div>
+
+    <div class="d-flex justify-content-center flex-wrap">
+      <button id="startButton" class="btn-custom" type="button">Click to Start Audio</button>
+      <button id="muteButton" class="btn-custom" type="button" disabled>Mute</button>
+    </div>
+  </div>
 
   <script>
-    // Send message to backend with custom username
-    function sendMessage() {
-      const user = document.getElementById('userInput').value.trim();
-      const msg = document.getElementById('msgInput').value.trim();
+    const speakerEl = document.getElementById('speaker');
+    const startButton = document.getElementById('startButton');
+    const muteButton = document.getElementById('muteButton');
+    const userCountEl = document.getElementById('userCount');
 
-      if (!user) return alert('Please enter your name');
-      if (!msg) return alert('Please enter a message');
+    let audioStarted = false;
+    let audioMuted = false;
+    let mediaSource, sourceBuffer, audio;
 
-      fetch(`/send-message?user=${encodeURIComponent(user)}&msg=${encodeURIComponent(msg)}`)
-        .then(res => res.text())
-        .then(response => {
-          alert(response);
-          document.getElementById('msgInput').value = '';
-          loadMessages();
-        })
-        .catch(err => alert('Error sending message: ' + err));
-    }
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.binaryType = 'arraybuffer';
 
-    // Load recent messages from backend
-    function loadMessages() {
-      fetch('/get-messages')
-        .then(res => res.json())
-        .then(messages => {
-          const chatBox = document.getElementById('chatBox');
-          chatBox.innerHTML = '';
-          messages.forEach(msg => {
-            const div = document.createElement('div');
-            const time = new Date(msg.createdAt).toLocaleTimeString();
-            div.innerHTML = `<strong>${msg.author}</strong> [${time}]: ${msg.content}`;
-            chatBox.appendChild(div);
-          });
-          chatBox.scrollTop = chatBox.scrollHeight;
-        })
-        .catch(err => {
-          console.error('Failed to load messages:', err);
+    let queue = [];
+    let updating = false;
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'speaker') {
+            speakerEl.textContent = msg.speaker || 'None';
+          } else if (msg.type === 'user_count') {
+            userCountEl.textContent = `Listeners: ${msg.count}`;
+          }
+        } catch (e) {
+          console.error('Invalid JSON:', e);
+        }
+        return;
+      }
+
+      if (!audioStarted || !sourceBuffer) return;
+
+      const chunk = new Uint8Array(event.data);
+      queue.push(chunk);
+      if (!updating) appendNext();
+    };
+
+    ws.onopen = () => console.log('WebSocket connected');
+    ws.onclose = () => {
+      speakerEl.textContent = 'Disconnected';
+      console.log('WebSocket disconnected');
+      if (mediaSource && !mediaSource.closed) {
+        try {
+          mediaSource.endOfStream();
+        } catch (e) { }
+      }
+    };
+
+    startButton.addEventListener('click', () => {
+      if (audioStarted) return;
+      audioStarted = true;
+      startButton.disabled = true;
+      startButton.textContent = 'Loading...';
+
+      audio = new Audio();
+      mediaSource = new MediaSource();
+      audio.src = URL.createObjectURL(mediaSource);
+      audio.autoplay = true;
+      audio.controls = true;
+
+      document.querySelector('.radio-card').appendChild(audio);
+
+      mediaSource.addEventListener('sourceopen', () => {
+        sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+        sourceBuffer.mode = 'sequence';
+
+        sourceBuffer.addEventListener('updateend', () => {
+          updating = false;
+          appendNext();
         });
-    }
 
-    // Load messages on page load and refresh every 5 seconds
-    loadMessages();
-    setInterval(loadMessages, 5000);
+        startButton.textContent = 'Playing';
+        muteButton.disabled = false;
+        audio.style.display = 'block';
+      });
+    });
+
+    muteButton.addEventListener('click', () => {
+      if (!audio) return;
+      audioMuted = !audioMuted;
+      audio.muted = audioMuted;
+      muteButton.textContent = audioMuted ? 'Unmute' : 'Mute';
+    });
+
+    function appendNext() {
+      if (updating || queue.length === 0) return;
+      updating = true;
+      const chunk = queue.shift();
+      try {
+        sourceBuffer.appendBuffer(chunk);
+      } catch (e) {
+        console.error('appendBuffer error:', e);
+        updating = false;
+      }
+    }
   </script>
+
+  <!-- Bootstrap JS Bundle CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
+
 </html>

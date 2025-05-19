@@ -1,82 +1,195 @@
 require('dotenv').config();
-const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
+const { joinVoiceChannel, EndBehaviorType } = require('@discordjs/voice');
+const prism = require('prism-media');
+const ffmpeg = require('ffmpeg-static');
+const { spawn } = require('child_process');
+const express = require('express');
 const path = require('path');
+const http = require('http');
+const WebSocket = require('ws');
+const cors = require('cors');
+const AudioMixer = require('audio-mixer');
 
-const app = express();
-const port = 3000;
-
-// Serve static frontend files
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Discord bot setup
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-client.once('ready', () => {
-  console.log(`🤖 Bot is logged in as ${client.user.tag}`);
+const GUILD_ID = process.env.GUILD_ID;
+const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
+
+const wsClients = new Set(); // WebSocket clients for metadata + audio
+let currentSpeaker = null;
+
+// Audio mixer
+const mixer = new AudioMixer.Mixer({
+  channels: 1,
+  bitDepth: 16,
+  sampleRate: 48000,
+  clearInterval: 250,
+  maxStreams: 20,
 });
 
-// Endpoint to send message with custom username
-// Example usage: /send-message?msg=hello&user=Mehedi
-app.get('/send-message', async (req, res) => {
-  const msg = req.query.msg || '📢 Default message from website';
-  const user = req.query.user || 'Anonymous';
+// FFmpeg encoding
+const ffmpegProcess = spawn(ffmpeg, [
+  '-f', 's16le',
+  '-ar', '48000',
+  '-ac', '1',
+  '-i', 'pipe:0',
+  '-af', 'afftdn',
+  '-f', 'mp3',
+  '-b:a', '128k',
+  '-ac', '2',
+  'pipe:1',
+]);
 
-  try {
-    const channel = await client.channels.fetch(process.env.CHANNEL_ID);
-    // Send message with custom username prefix in content
-    await channel.send(`[${user}]: ${msg}`);
-    res.send(`✅ Message sent as [${user}]: ${msg}`);
-  } catch (error) {
-    console.error(error);
-    res.status(500).send('❌ Error sending message to Discord');
+mixer.pipe(ffmpegProcess.stdin);
+
+// Send MP3 audio over WebSocket in binary
+ffmpegProcess.stdout.on('data', (chunk) => {
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(chunk);
+    }
   }
 });
 
-// Endpoint to get last 20 messages with parsed usernames
-app.get('/get-messages', async (req, res) => {
+// Get speaker's username
+async function getUsername(userId) {
   try {
-    const channel = await client.channels.fetch(process.env.CHANNEL_ID);
-    const messages = await channel.messages.fetch({ limit: 20 });
-
-    const simplified = messages
-      .map(m => {
-        // Regex to parse messages of format: [username]: message
-        const match = m.content.match(/^\[(.+?)\]:\s*(.*)$/);
-        if (match) {
-          return {
-            author: match[1],
-            content: match[2],
-            createdAt: m.createdAt,
-          };
-        } else {
-          // fallback to Discord author if no match
-          return {
-            author: m.author.username,
-            content: m.content,
-            createdAt: m.createdAt,
-          };
-        }
-      })
-      .sort((a, b) => a.createdAt - b.createdAt);
-
-    res.json(simplified);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    const user = await client.users.fetch(userId);
+    return user.username;
+  } catch {
+    return 'Unknown';
   }
+}
+
+// Send metadata
+function broadcastMetadata(obj) {
+  const json = JSON.stringify(obj);
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(json);
+    }
+  }
+}
+
+// Connect to Discord
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  const guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) return console.error('Guild not found');
+
+  const connection = joinVoiceChannel({
+    channelId: VOICE_CHANNEL_ID,
+    guildId: GUILD_ID,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: false,
+  });
+
+  const receiver = connection.receiver;
+  const speakingStreams = new Map();
+
+  receiver.speaking.on('start', async (userId) => {
+    if (speakingStreams.has(userId)) return;
+
+    const username = await getUsername(userId);
+    currentSpeaker = username;
+    console.log(`🎙️ ${username} started speaking`);
+    broadcastMetadata({ type: 'speaker', speaker: currentSpeaker });
+
+    const opusStream = receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.AfterSilence, duration: 500 },
+    });
+
+    const pcmStream = new prism.opus.Decoder({
+      rate: 48000,
+      channels: 1,
+      frameSize: 960,
+    });
+
+    opusStream.pipe(pcmStream);
+
+    const mixerInput = new AudioMixer.Input({
+      channels: 1,
+      bitDepth: 16,
+      sampleRate: 48000,
+      volume: 100,
+    });
+
+    pcmStream.pipe(mixerInput);
+    mixer.addInput(mixerInput);
+
+    speakingStreams.set(userId, { opusStream, pcmStream, mixerInput });
+
+    const cleanup = () => {
+      console.log(`🛑 ${username} stopped speaking`);
+      currentSpeaker = null;
+      broadcastMetadata({ type: 'speaker', speaker: null });
+
+      try {
+        mixer.removeInput(mixerInput);
+      } catch (e) {}
+
+      pcmStream.unpipe(mixerInput);
+      pcmStream.destroy();
+      if (typeof mixerInput.destroy === 'function') mixerInput.destroy();
+      if (typeof mixerInput.stop === 'function') mixerInput.stop();
+      opusStream.destroy();
+
+      speakingStreams.delete(userId);
+    };
+
+    opusStream.on('end', cleanup);
+    opusStream.on('error', console.error);
+    pcmStream.on('error', console.error);
+  });
+
+  receiver.speaking.on('end', (userId) => {
+    const stream = speakingStreams.get(userId);
+    if (stream) {
+      stream.opusStream.emit('end');
+    }
+  });
 });
 
-// Start web server
-app.listen(port, () => {
-  console.log(`🌐 Web server running: http://localhost:${port}`);
-});
-
-// Login Discord bot
 client.login(process.env.DISCORD_TOKEN);
+
+// Server setup
+const app = express();
+app.use(cors());
+app.use(express.static(path.join(__dirname, 'public')));
+const server = http.createServer(app);
+const PORT = process.env.PORT || 3000;
+
+const wss = new WebSocket.Server({ server, path: '/ws' });
+function broadcastUserCount() {
+  const count = wsClients.size;
+  const msg = JSON.stringify({ type: 'user_count', count });
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+wss.on('connection', (ws) => {
+  wsClients.add(ws);
+  console.log(`🌐 WS client connected. Total WS: ${wsClients.size}`);
+
+  ws.send(JSON.stringify({
+    type: 'status',
+    speaker: currentSpeaker,
+  }));
+  broadcastUserCount();
+  ws.on('close', () => {
+    wsClients.delete(ws);
+    
+    console.log(`🔌 WS client disconnected. Total WS: ${wsClients.size}`);
+      broadcastUserCount();
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server running: http://localhost:${PORT}`);
+});
