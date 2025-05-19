@@ -49,6 +49,8 @@ function startFfmpeg() {
   mixer.pipe(ffmpegProcess.stdin);
 
   ffmpegProcess.stdout.on('data', (chunk) => {
+    console.log(`🔊 Sending audio chunk to ${chunk} clients`);
+    
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
         console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
