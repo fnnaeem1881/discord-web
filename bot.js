@@ -33,6 +33,57 @@ const mixer = new AudioMixer.Mixer({
 
 let ffmpegProcess;
 let noDataTimeout;
+let restarting = false;   // To avoid multiple restarts
+
+const speakingStreams = new Map();  // Moved here, globally accessible
+
+async function fullRestart() {
+  if (restarting) return; // Prevent overlap
+  restarting = true;
+
+  console.warn('Full restart: cleaning up streams and restarting ffmpeg & voice connection');
+
+  // Destroy all mixer inputs
+  mixer.inputs.forEach(input => {
+    try {
+      input.destroy();
+    } catch {}
+  });
+  mixer.removeAllInputs();
+
+  // Destroy all speakingStreams
+  speakingStreams.forEach(({ opusStream, pcmStream, mixerInput }) => {
+    try { opusStream.destroy(); } catch {}
+    try { pcmStream.destroy(); } catch {}
+    try { mixerInput.destroy(); } catch {}
+  });
+  speakingStreams.clear();
+
+  // Kill ffmpeg process if exists
+  if (ffmpegProcess) {
+    try {
+      ffmpegProcess.kill('SIGKILL');
+    } catch {}
+    ffmpegProcess = null;
+  }
+
+  // Destroy Discord voice connection if exists
+  if (connection) {
+    try {
+      connection.destroy();
+    } catch {}
+    connection = null;
+  }
+
+  // Wait a little before restarting
+  await new Promise(r => setTimeout(r, 500));
+
+  // Restart ffmpeg and voice connection
+  startFfmpeg();
+  await reconnectVoice();
+
+  restarting = false;
+}
 
 function startFfmpeg() {
   console.log('Starting ffmpeg process...');
@@ -51,28 +102,25 @@ function startFfmpeg() {
   mixer.pipe(ffmpegProcess.stdin);
   console.log('ffmpeg process started');
 
-  // Clear and reset noDataTimeout on data event
   function resetNoDataTimeout() {
     if (noDataTimeout) clearTimeout(noDataTimeout);
     noDataTimeout = setTimeout(() => {
       console.warn('⚠️ No ffmpeg stdout data for 5 seconds. Reconnecting voice...');
-      reconnectVoice();
-      startFfmpeg();
-    }, 5000); // 5 seconds timeout
+      fullRestart();
+    }, 5000);
   }
 
   ffmpegProcess.stdout.on('data', (chunk) => {
-    console.log(`Opus stream data from  ${chunk.length} bytes`);
-    console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
+    if (!chunk || chunk.length <= 0) {
+      console.error('Received empty audio chunk');
+      fullRestart();
+      return;
+    }
 
     resetNoDataTimeout();
 
-    if (chunk.length <= 0) {
-      console.error('Received empty audio chunk');
-      reconnectVoice();
-      console.warn('Reconnecting voice...');
-      return;
-    }
+    console.log(`Opus stream data from  ${chunk.length} bytes`);
+    console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
 
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
@@ -81,7 +129,6 @@ function startFfmpeg() {
     }
   });
 
-  // Set initial timeout as soon as ffmpeg starts
   resetNoDataTimeout();
 
   ffmpegProcess.stdin.on('error', (err) => console.error('ffmpeg stdin error:', err));
@@ -92,27 +139,17 @@ function startFfmpeg() {
     console.warn(`ffmpeg process closed (code: ${code}, signal: ${signal}). Restarting...`);
     mixer.unpipe(ffmpegProcess.stdin);
     if (noDataTimeout) clearTimeout(noDataTimeout);
-    reconnectVoice();
+    fullRestart();
   });
 }
 
 function checkSilenceAndReconnect() {
   if (Date.now() - lastAudioReceived > 5000) {
     console.warn('🔇 No audio received for 5s. Reconnecting bot...');
-    reconnectVoice();
+    fullRestart();
   }
 }
-
 setInterval(checkSilenceAndReconnect, 5000);
-
-function broadcastMetadata(obj) {
-  const json = JSON.stringify(obj);
-  for (const ws of wsClients) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(json);
-    }
-  }
-}
 
 async function getUsername(userId) {
   try {
@@ -123,9 +160,16 @@ async function getUsername(userId) {
   }
 }
 
-function setupReceiver(receiver) {
-  const speakingStreams = new Map();
+function broadcastMetadata(obj) {
+  const json = JSON.stringify(obj);
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(json);
+    }
+  }
+}
 
+function setupReceiver(receiver) {
   receiver.speaking.on('start', async (userId) => {
     if (speakingStreams.has(userId)) return;
 
@@ -202,7 +246,10 @@ function setupReceiver(receiver) {
 
 async function reconnectVoice() {
   try {
-    if (connection) connection.destroy();
+    if (connection) {
+      try { connection.destroy(); } catch {}
+      connection = null;
+    }
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) return console.error('Guild not found');
 
@@ -222,51 +269,35 @@ async function reconnectVoice() {
 
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  reconnectVoice();
+
+  startFfmpeg();
+  await reconnectVoice();
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// WebSocket and Express setup remains the same
 
-// Web Server
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
-const PORT = process.env.PORT || 3000;
 
-const wss = new WebSocket.Server({ server, path: '/ws' });
-
-function broadcastUserCount() {
-  const count = wsClients.size;
-  const msg = JSON.stringify({ type: 'user_count', count });
-  for (const ws of wsClients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  }
-}
-
+const wss = new WebSocket.Server({ server });
 wss.on('connection', (ws) => {
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.type === 'speaker') {
+        broadcastMetadata({ type: 'speaker', speaker: currentSpeaker });
+      }
+    } catch {}
+  });
   wsClients.add(ws);
-  console.log(`🌐 WS client connected. Total: ${wsClients.size}`);
-  ws.send(JSON.stringify({ type: 'status', speaker: currentSpeaker }));
-  broadcastUserCount();
 
   ws.on('close', () => {
     wsClients.delete(ws);
-    console.log(`🔌 WS client disconnected. Total: ${wsClients.size}`);
-    broadcastUserCount();
   });
-
-  ws.on('error', (err) => console.error('WebSocket error:', err));
 });
 
-setInterval(() => {
-  for (const ws of wsClients) {
-    if (ws.readyState === WebSocket.OPEN) ws.ping();
-  }
-}, 30000);
+server.listen(4000, () => console.log('🌐 Server running on port 4000'));
 
-server.listen(PORT, () => {
-  console.log(`🚀 Server running: http://localhost:${PORT}`);
-});
-
-startFfmpeg();
+client.login(process.env.DISCORD_BOT_TOKEN);
