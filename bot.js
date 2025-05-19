@@ -47,11 +47,12 @@ function startFfmpeg() {
   ]);
 
   mixer.pipe(ffmpegProcess.stdin);
+  console.log('ffmpeg process started');
 
   ffmpegProcess.stdout.on('data', (chunk) => {
-      console.log(`Opus stream data from  ${chunk.length} bytes`);
-    
-    
+    console.log(`Opus stream data from  ${chunk.length} bytes`);
+
+
     if (chunk.length < 0) {
       console.error('Received empty audio chunk');
       reconnectVoice();
@@ -62,7 +63,7 @@ function startFfmpeg() {
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
         console.log(`🔊 Sending audio chunk to ${wsClients.size} clients`);
-        
+
         ws.send(chunk);
       }
     }
@@ -149,7 +150,7 @@ function setupReceiver(receiver) {
       audioTimeout = setTimeout(() => {
         cleanup();
         if (speakingStreams.has(userId)) {
-          try { speakingStreams.get(userId).opusStream.destroy(); } catch {}
+          try { speakingStreams.get(userId).opusStream.destroy(); } catch { }
           speakingStreams.delete(userId);
         }
       }, 3000);
@@ -160,11 +161,11 @@ function setupReceiver(receiver) {
       currentSpeaker = null;
       broadcastMetadata({ type: 'speaker', speaker: null });
       clearTimeout(audioTimeout);
-      try { mixer.removeInput(mixerInput); } catch {}
+      try { mixer.removeInput(mixerInput); } catch { }
       pcmStream.unpipe(mixerInput);
       pcmStream.destroy();
       if (typeof mixerInput.destroy === 'function') mixerInput.destroy();
-      try { opusStream.destroy(); } catch {}
+      try { opusStream.destroy(); } catch { }
       speakingStreams.delete(userId);
     };
 
