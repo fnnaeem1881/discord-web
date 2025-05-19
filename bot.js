@@ -49,7 +49,7 @@ function startFfmpeg() {
   mixer.pipe(ffmpegProcess.stdin);
 
   ffmpegProcess.stdout.on('data', (chunk) => {
-      console.log(`Opus stream data from ${username}: ${chunk.length} bytes`);
+      console.log(`Opus stream data from  ${chunk.length} bytes`);
     
     for (const ws of wsClients) {
       if (ws.readyState === WebSocket.OPEN) {
